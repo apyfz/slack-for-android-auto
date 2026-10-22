@@ -1,0 +1,18 @@
+# Locally supplied or generated proprietary files and signing material
+/build*/
+/inputs/
+*.apk
+*.apks
+*.apkm
+*.xapk
+*.dex
+*.smali
+*.jar
+*.keystore
+*.jks
+*.idsig
+.env
+.env.*
+__pycache__/
+*.pyc
+.DS_Store
