@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch only Slack 26.10.20.0's decoded classes6 ChimeMeetingSessionImpl.
+"""Patch supported Slack 26.10.20.0 / 26.10.40.0 ChimeMeetingSessionImpl.
 Usage: python3 patch_mute_sync.py path/to/ChimeMeetingSessionImpl.smali
 No APK/signing/emulator operations. Fails closed if either original method differs.
 """
@@ -9,9 +9,19 @@ import re
 import sys
 
 C = 'Lslack/services/huddles/core/impl/meetingsession/ChimeMeetingSessionImpl;'
-EXPECTED = {
-    'setMute': 'e5c75231cf23ef090171428c49073b89f7f1204432c460cede9dc3694bd3a7b3',
-    'onAudioSessionStarted': '092b76d8e863e687f54166f86d8ae4f29c01f29cae13f6e259072ef2edbe68ec',
+PROFILES = {
+    '26.10.20.0': {
+        'setMute': 'e5c75231cf23ef090171428c49073b89f7f1204432c460cede9dc3694bd3a7b3',
+        'onAudioSessionStarted': '092b76d8e863e687f54166f86d8ae4f29c01f29cae13f6e259072ef2edbe68ec',
+        'wrapper': 'Lcom/slack/data/slog/SlogInfo$Builder;',
+        'controller_field': 'is_synthetic',
+    },
+    '26.10.40.0': {
+        'setMute': '1dfa06e0b4398e65c20b4f581d306e1fbb8062ba70425c09a7f2390e47328c3c',
+        'onAudioSessionStarted': 'efe17af2cffc05169c84d522659b4625baa48dbd58543da4f965db08efc40ced',
+        'wrapper': 'Landroidx/camera/video/Recorder$5;',
+        'controller_field': 'val$completer',
+    },
 }
 HELPER = r'''
 # Huddle Auto: publish actual Chime microphone state to Android Telecom.
@@ -85,12 +95,19 @@ def patch(text):
     assert 'syncHuddleMute' not in text, 'Already patched'
     assert f'.class public final {C}' in text
     originals = {}
-    for name, digest in EXPECTED.items():
+    digests = {}
+    for name in ('setMute', 'onAudioSessionStarted'):
         matches = re.findall(r'^\.method public final ' + name + r'\(Z\)V\n.*?^\.end method', text, re.M | re.S)
         assert len(matches) == 1, f'Expected unique {name}'
         body = matches[0]
-        assert hashlib.sha256(body.encode()).hexdigest() == digest, f'Unsupported original {name}'
         originals[name] = body
+        digests[name] = hashlib.sha256(body.encode()).hexdigest()
+    profiles = [profile for profile in PROFILES.values()
+                if all(profile[name] == digest for name, digest in digests.items())]
+    assert len(profiles) == 1, 'Unsupported original mute/session method pair'
+    profile = profiles[0]
+    helper = HELPER.replace('Lcom/slack/data/slog/SlogInfo$Builder;', profile['wrapper'])
+    helper = helper.replace('->is_synthetic:Ljava/lang/Object;', '->'+profile['controller_field']+':Ljava/lang/Object;')
     mute = originals['setMute']
     assert mute.count('.locals 2') == 1
     # R8 reuses p0 for AudioClient. Preserve original session in new v2.
@@ -102,7 +119,7 @@ def patch(text):
     assert start.count('    return-void') == 1
     # v0 is dead at normal return. p0 still refers to the session on this path.
     start = start.replace('    return-void', f'    const/4 v0, -0x1\n    invoke-direct {{p0, v0}}, {C}->syncHuddleMute(I)V\n\n    return-void', 1)
-    result = text.replace(originals['setMute'], mute, 1).replace(originals['onAudioSessionStarted'], start, 1) + HELPER
+    result = text.replace(originals['setMute'], mute, 1).replace(originals['onAudioSessionStarted'], start, 1) + helper
     assert result.count('->syncHuddleMute(I)V') == 3
     assert result.count('.method private syncHuddleMute(I)V') == 1
     assert result.count('->setMicrophoneMute(Z)V') == text.count('->setMicrophoneMute(Z)V') + 1
